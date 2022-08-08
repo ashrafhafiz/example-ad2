@@ -53,6 +53,36 @@ Once you have your connection(s) configured, run a quick test to make sure they'
 php artisan ldap:test
 ```
 
+#### Database Migration
+
+Update the create users table migration to add the username column. The LdapRecord documentation suggests updating the email column to the username, but personally I think it’s useful to store the email in your user model. This makes it easy to use Laravel’s Notifications and Mailables.
+
+```
+php artisan make:migration add_username_column_to_users_table
+```
+
+```php
+<?php
+...
+return new class extends Migration
+{
+...
+    public function up()
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->string('username')->after('name')->unique();
+        });
+    }
+...
+    public function down()
+    {
+        Schema::table('users', function (Blueprint $table) {
+            $table->dropColumn('username');
+        });
+    }
+};
+```
+
 #### Login Controller
 
 ```php
@@ -147,4 +177,95 @@ Auth::user()->getName()
     autocomplete="username"
     autofocus
 />
+```
+
+## Stage 2: Add Database Authentication as a fallback
+
+Synchronized Database LDAP Authentication means that an LDAP user which successfully passes LDAP authentication will be created & synchronized to your local applications database. This is helpful as you can attach typical relational database information to them, such as blog posts, attachments, etc.
+
+#### Publishing The Required Migration
+
+Publish the migration using the below command:
+
+```php
+php artisan vendor:publish --provider="LdapRecord\Laravel\LdapAuthServiceProvider"
+```
+
+Then run the migration using the below command:
+
+```php
+php artisan migrate
+```
+
+#### Add The Required Trait and Interface
+
+Add the following interface and trait to your User Eloquent model:
+
+-   Trait: LdapRecord\Laravel\Auth\AuthenticatesWithLdap
+-   Interface: LdapRecord\Laravel\Auth\LdapAuthenticatable
+
+```php
+// app/User.php
+
+// ...
+
+use LdapRecord\Laravel\Auth\LdapAuthenticatable;
+use LdapRecord\Laravel\Auth\AuthenticatesWithLdap;
+
+class User extends Authenticatable implements LdapAuthenticatable
+{
+    use Notifiable, AuthenticatesWithLdap;
+
+    // ...
+}
+```
+
+#### Configuration
+
+To configure a synchronized database LDAP authentication provider, navigate to the providers array inside of your config/auth.php file, and paste the following users provider:
+
+```php
+// config/auth.php
+
+'providers' => [
+    // ...
+    'users' => [
+        'driver' => 'ldap',
+        'model' => LdapRecord\Models\ActiveDirectory\User::class,
+        'database' => [
+            'model' => App\Models\User::class,
+            'sync_passwords' => true,
+            'sync_attributes' => [
+                'name' => 'cn',
+                'email' => 'mail',
+                'username' => 'samaccountname',
+            ],
+        ],
+        'rules' => [],
+    ],
+],
+```
+
+#### Add Fallback to LoginController
+
+```php
+<?php
+
+...
+
+class LoginController extends Controller
+{
+...
+    protected function credentials(Request $request)
+    {
+        return [
+            'samaccountname' => $request->username,
+            'password' => $request->password,
+            'fallback' => [
+                'username' => $request->username,
+                'password' => $request->password,
+            ],
+        ];
+    }
+}
 ```
